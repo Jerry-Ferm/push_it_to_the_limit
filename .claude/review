@@ -1,0 +1,169 @@
+# Code Review — skill updates + main.dart
+
+Branch: 2-add-claude-md
+Date: 2026-06-06
+
+## Findings (6 issues, ranked by severity)
+
+---
+
+### 1. Auth guard recreates GoRouter on every auth state change — navigation stack is lost
+
+**File:** `.agents/skills/flutter-setup-declarative-routing/SKILL.md` ~line 38
+
+The skill teaches:
+
+```dart
+@Riverpod(keepAlive: true)
+GoRouter router(Ref ref) {
+  final authState = ref.watch(authStateProvider);
+  return GoRouter(initialLocation: '/', redirect: ..., routes: [...]);
+}
+```
+
+`keepAlive: true` prevents disposal when listener count drops to zero, but does **not** prevent re-execution when a watched dependency changes. When `authStateProvider` emits (login/logout), Riverpod invalidates `routerProvider` and re-runs its body — constructing a brand-new `GoRouter`. Flutter's `Router.didUpdateWidget` detects that `routeInformationProvider.value` changed (the new one starts at `/`), calls `setNewRoutePath('/')`, and wipes the navigation stack. The user is returned to the home screen on every auth state change.
+
+**Fix:** Keep one `GoRouter` instance alive and drive re-evaluation via `refreshListenable`:
+
+```dart
+@Riverpod(keepAlive: true)
+GoRouter router(Ref ref) {
+  final notifier = ref.watch(authStateProvider.notifier);
+  return GoRouter(
+    initialLocation: '/',
+    refreshListenable: notifier, // notifier must extend ChangeNotifier
+    redirect: (context, state) {
+      final isLoggedIn = notifier.isAuthenticated;
+      // ...
+    },
+    routes: [...],
+  );
+}
+```
+
+---
+
+### 2. `overrideWithValue` is not generated for class-based or async providers — compile error
+
+**File:** `.agents/skills/flutter-add-widget-test/SKILL.md` ~line 65
+**Also:** `.agents/skills/dart-generate-test-mocks/SKILL.md` ~line 99
+
+Both skills teach this as the universal override pattern:
+
+```dart
+photoRepositoryProvider.overrideWithValue(mockRepo)
+```
+
+`riverpod_generator` only emits `overrideWithValue` for synchronous functional `@riverpod` providers (`createdType == SupportedCreatedType.value`). It is **absent** on:
+- Class-based notifiers: `@riverpod class PhotoRepository extends _$PhotoRepository`
+- Async functional providers: `@riverpod Future<PhotoRepository> photoRepository(Ref ref) async => ...`
+
+Applying the pattern to either produces: `The method 'overrideWithValue' isn't defined`.
+
+**Fix:** Use `overrideWith` as the universal alternative:
+
+```dart
+// functional provider (sync or async)
+photoRepositoryProvider.overrideWith((ref) => mockRepo)
+
+// class-based notifier
+photoRepositoryProvider.overrideWith(() => MockPhotoRepository())
+```
+
+Update both skills to show `overrideWith` and note that `overrideWithValue` only works on sync functional providers.
+
+---
+
+### 3. `setUpAll`/`test` outside `void main()` — invalid Dart, compile error
+
+**File:** `.agents/skills/dart-generate-test-mocks/SKILL.md` ~line 90
+
+The "Mocking with Custom Type Arguments" example is a standalone fenced code block where `setUpAll(...)` and `test(...)` appear at the top level:
+
+```dart
+class MockBookingRepository extends Mock implements BookingRepository {}
+
+setUpAll(() { ... });   // ← top-level expression statement — invalid
+
+test('creates booking', () async { ... });  // ← same
+```
+
+Dart only permits declarations at the top level. Expression statements require a function body. The compiler produces `Expected a declaration`.
+
+**Fix:** Wrap in `void main() { ... }`, matching the first example in the same file.
+
+---
+
+### 4. `NetworkException` is never defined — compile error when code is copied
+
+**File:** `.agents/skills/flutter-use-http-package/SKILL.md` ~line 108
+
+`NetworkException` is thrown in both the service layer and the POST/mutation examples:
+
+```dart
+on DioException catch (e) {
+  throw NetworkException('Failed to fetch photos: ${e.message}');
+}
+```
+
+It is not part of Dio, Flutter, or any installed dependency. No step in the workflow instructs the developer to create it, and no placeholder comment exists. Copying either snippet produces `Undefined class 'NetworkException'`.
+
+**Fix:** Either define a minimal example inline, or add a note such as: `// NetworkException is a project-defined domain exception — e.g.: class NetworkException implements Exception { ... }`. A workflow step should also prompt its creation.
+
+---
+
+### 5. `usePathUrlStrategy()` removed — hash-based URLs on web
+
+**File:** `.agents/skills/flutter-setup-declarative-routing/SKILL.md` ~line 88
+
+The new `main()` example:
+
+```dart
+void main() {
+  runApp(const ProviderScope(child: MyApp()));
+}
+```
+
+The prior version called `usePathUrlStrategy()` before `runApp()`. go_router 17.x does not internalize URL strategy; the Flutter engine defaults to `HashUrlStrategy`. Without the call, all web routes use `#`-fragment URLs (`https://example.com/#/settings`), breaking deep-links, bookmarks, and server-side routing. The project has a `web/` directory confirming web is a target.
+
+**Fix:** Add `usePathUrlStrategy()` back before `runApp()` and re-add the import:
+
+```dart
+import 'package:flutter_web_plugins/url_strategy.dart';
+
+void main() {
+  usePathUrlStrategy();
+  runApp(const ProviderScope(child: MyApp()));
+}
+```
+
+---
+
+### 6. `refresh()` awaits `future` after `invalidateSelf()` — StateError if widget unmounts first
+
+**File:** `.agents/skills/flutter-apply-architecture-best-practices/SKILL.md` ~line 111
+
+```dart
+Future<void> refresh() async {
+  ref.invalidateSelf();
+  await future;  // ← throws if provider disposed before build() completes
+}
+```
+
+With `@riverpod` (auto-dispose), if the consumer widget unmounts between the `invalidateSelf()` call and the rebuild completing, the provider is disposed mid-loading. `ElementWithFuture.dispose()` completes the pending `Completer` with `StateError: 'The provider was disposed during loading state, yet no value could be emitted'`. This surfaces as an unhandled async exception.
+
+**Fix:** Drop the `await future` (fire-and-forget is fine for a refresh action), or guard with `ref.mounted`:
+
+```dart
+Future<void> refresh() async {
+  ref.invalidateSelf();
+  await future;
+  if (!ref.mounted) return; // guard subsequent work
+}
+```
+
+Or simply:
+
+```dart
+void refresh() => ref.invalidateSelf();
+```

@@ -2,8 +2,7 @@
 name: flutter-apply-architecture-best-practices
 description: Architects a Flutter application using the recommended layered approach (UI, Logic, Data). Use when structuring a new project or refactoring for scalability.
 metadata:
-  model: models/gemini-3.1-pro-preview
-  last_modified: Tue, 21 Apr 2026 20:11:20 GMT
+  last_modified: Fri, 06 Jun 2026 00:00:00 GMT
 ---
 # Architecting Flutter Applications
 
@@ -18,81 +17,89 @@ metadata:
 Enforce strict Separation of Concerns by dividing the application into distinct layers. Never mix UI rendering with business logic or data fetching.
 
 ### UI Layer (Presentation)
-Implement the MVVM (Model-View-ViewModel) pattern to manage UI state and logic.
-*   **Views:** Write reusable, lean widgets. Restrict logic in Views to UI-specific operations (e.g., animations, layout constraints, simple routing). Pass all required data from the ViewModel.
-*   **ViewModels:** Manage UI state and handle user interactions. Extend `ChangeNotifier` (or use `Listenable`) to expose state. Expose immutable state snapshots to the View. Inject Repositories into ViewModels via the constructor.
+Implement the MVVM pattern using Riverpod code-gen (`@riverpod`).
+
+- **Views:** Extend `ConsumerWidget` (stateless) or `ConsumerStatefulWidget` (stateful). Use `ref.watch(provider)` to subscribe to state — never call `ref.read()` inside `build()`. Keep widgets dumb: no business logic, no direct repository calls.
+- **ViewModels:** Extend `Notifier<T>` (sync) or `AsyncNotifier<T>` (async). Annotate with `@riverpod`. The `build()` method defines the initial state and wires dependencies via `ref.watch()`. Expose command methods that mutate state via `state =`. Use `@Riverpod(keepAlive: true)` only for app-lifetime state (e.g., auth).
 
 ### Data Layer
-Implement the Repository pattern to isolate data access logic and create a single source of truth.
-*   **Services:** Create stateless classes to wrap external APIs (HTTP clients, local databases, platform plugins). Return raw API models or `Result` wrappers.
-*   **Repositories:** Consume one or more Services. Transform raw API models into clean Domain Models. Handle caching, offline synchronization, and retry logic. Expose Domain Models to ViewModels.
+Implement the Repository pattern to isolate data access.
 
-### Logic Layer (Domain - Optional)
-*   **Use Cases:** Implement this layer only if the application contains complex business logic that clutters the ViewModel, or if logic must be reused across multiple ViewModels. Extract this logic into dedicated Use Case (interactor) classes that sit between ViewModels and Repositories.
+- **Services:** Stateless classes wrapping external APIs (Dio clients, local databases). Return raw API models or `Result` wrappers. Exposed as `@riverpod` providers.
+- **Repositories:** Consume one or more Services. Transform API models into Domain Models. Handle caching and retry logic. Exposed as `@riverpod` providers.
+
+### Logic Layer (Domain — Optional)
+- **Use Cases:** Extract only if complex business logic clutters the ViewModel or must be reused across multiple ViewModels.
+
+### Dependency Injection
+No manual DI setup is needed. Each class is exposed as a `@riverpod` provider. ViewModels inject repositories via `ref.watch(repositoryProvider)` inside `build()`.
 
 ## Project Structure
 
-Organize the codebase using a hybrid approach: group UI components by feature, and group Data/Domain components by type.
-
 ```text
 lib/
+├── config/              # App-level providers, env config
 ├── data/
-│   ├── models/         # API models
-│   ├── repositories/   # Repository implementations
-│   └── services/       # API clients, local storage wrappers
+│   ├── repositories/    # Interface + implementation per domain
+│   └── services/        # Dio clients, local storage
 ├── domain/
-│   ├── models/         # Clean domain models
-│   └── use_cases/      # Optional business logic classes
-└── ui/
-    ├── core/           # Shared widgets, themes, typography
-    └── features/
-        └── [feature_name]/
-            ├── view_models/
-            └── views/
+│   ├── models/          # Freezed immutable models
+│   └── use_cases/       # Optional cross-repository logic
+├── routing/             # go_router config as @riverpod provider
+├── ui/
+│   ├── core/            # Shared widgets, themes
+│   └── <feature>/
+│       ├── view_models/ # @riverpod Notifiers
+│       └── widgets/     # Screens and sub-widgets
+├── utils/
+└── main.dart            # runApp(ProviderScope(child: MyApp()))
 ```
 
 ## Workflow: Implementing a New Feature
 
-Follow this sequential workflow when adding a new feature to the application. Copy the checklist to track progress.
-
 ### Task Progress
-- [ ] **Step 1: Define Domain Models.** Create immutable data classes for the feature using `freezed` or `built_value`.
-- [ ] **Step 2: Implement Services.** Create or update Service classes to handle external API communication.
-- [ ] **Step 3: Implement Repositories.** Create the Repository to consume Services and return Domain Models.
-- [ ] **Step 4: Apply Conditional Logic (Domain Layer).**
-  - *If the feature requires complex data transformation or cross-repository logic:* Create a Use Case class.
-  - *If the feature is a simple CRUD operation:* Skip to Step 5.
-- [ ] **Step 5: Implement the ViewModel.** Create the ViewModel extending `ChangeNotifier`. Inject required Repositories/Use Cases. Expose immutable state and command methods.
-- [ ] **Step 6: Implement the View.** Create the UI widget. Use `ListenableBuilder` or `AnimatedBuilder` to listen to ViewModel changes.
-- [ ] **Step 7: Inject Dependencies.** Register the new Service, Repository, and ViewModel in the dependency injection container (e.g., `provider` or `get_it`).
-- [ ] **Step 8: Run Validator.** Execute unit tests for the ViewModel and Repository.
-  - *Feedback Loop:* Run tests -> Review failures -> Fix logic -> Re-run until passing.
+- [ ] **Step 1: Define Domain Models.** Create `@freezed` data classes in `domain/models/`.
+- [ ] **Step 2: Implement Services.** Create `@riverpod` service classes for external API calls.
+- [ ] **Step 3: Implement Repositories.** Create `@riverpod` repository that consumes Services and returns Domain Models.
+- [ ] **Step 4: Conditional Logic (Domain Layer).**
+  - *If complex cross-repository logic:* Create a Use Case class.
+  - *If simple CRUD:* Skip to Step 5.
+- [ ] **Step 5: Implement the ViewModel.** Create `@riverpod class FooViewModel extends _$FooViewModel`. Inject repositories via `ref.watch()` in `build()`. Expose command methods.
+- [ ] **Step 6: Implement the View.** Extend `ConsumerWidget`. Use `ref.watch(fooViewModelProvider)` and `.when()` for async state.
+- [ ] **Step 7: Run code generation.** Execute `dart run build_runner build --delete-conflicting-outputs`.
+- [ ] **Step 8: Run tests.** Execute unit tests for the ViewModel and Repository.
 
 ## Examples
 
 ### Data Layer: Service and Repository
 
 ```dart
-// 1. Service (Raw API interaction)
+// 1. Service (Dio client, raw API interaction)
+@riverpod
+ApiClient apiClient(Ref ref) => ApiClient(dio: ref.watch(dioProvider));
+
 class ApiClient {
+  ApiClient({required Dio dio}) : _dio = dio;
+  final Dio _dio;
+
   Future<UserApiModel> fetchUser(String id) async {
-    // HTTP GET implementation...
+    final response = await _dio.get('/users/$id');
+    return UserApiModel.fromJson(response.data as Map<String, dynamic>);
   }
 }
 
-// 2. Repository (Single source of truth, returns Domain Model)
+// 2. Repository (single source of truth, returns Domain Model)
+@riverpod
+UserRepository userRepository(Ref ref) =>
+    UserRepository(apiClient: ref.watch(apiClientProvider));
+
 class UserRepository {
   UserRepository({required ApiClient apiClient}) : _apiClient = apiClient;
-  
   final ApiClient _apiClient;
-  User? _cachedUser;
 
   Future<User> getUser(String id) async {
-    if (_cachedUser != null) return _cachedUser!;
-    
     final apiModel = await _apiClient.fetchUser(id);
-    _cachedUser = User(id: apiModel.id, name: apiModel.fullName); // Transform to Domain Model
-    return _cachedUser!;
+    return User(id: apiModel.id, name: apiModel.fullName);
   }
 }
 ```
@@ -100,63 +107,58 @@ class UserRepository {
 ### UI Layer: ViewModel and View
 
 ```dart
-// 3. ViewModel (State management and presentation logic)
-class ProfileViewModel extends ChangeNotifier {
-  ProfileViewModel({required UserRepository userRepository}) 
-      : _userRepository = userRepository;
-
-  final UserRepository _userRepository;
-
-  User? _user;
-  User? get user => _user;
-
-  bool _isLoading = false;
-  bool get isLoading => _isLoading;
-
-  Future<void> loadProfile(String id) async {
-    _isLoading = true;
-    notifyListeners();
-
-    try {
-      _user = await _userRepository.getUser(id);
-    } finally {
-      _isLoading = false;
-      notifyListeners();
-    }
+// 3. ViewModel (AsyncNotifier — preferred for async state)
+@riverpod
+class ProfileViewModel extends _$ProfileViewModel {
+  @override
+  Future<User> build(String userId) async {
+    final repo = ref.watch(userRepositoryProvider);
+    return repo.getUser(userId);
   }
+
+  void refresh() => ref.invalidateSelf();
 }
 
-// 4. View (Dumb UI component)
-class ProfileView extends StatelessWidget {
-  const ProfileView({super.key, required this.viewModel});
-
-  final ProfileViewModel viewModel;
+// 4. View (ConsumerWidget)
+class ProfileScreen extends ConsumerWidget {
+  const ProfileScreen({super.key, required this.userId});
+  final String userId;
 
   @override
-  Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: viewModel,
-      builder: (context, _) {
-        if (viewModel.isLoading) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        
-        final user = viewModel.user;
-        if (user == null) {
-          return const Center(child: Text('User not found'));
-        }
+  Widget build(BuildContext context, WidgetRef ref) {
+    final profileAsync = ref.watch(profileViewModelProvider(userId));
 
-        return Column(
-          children: [
-            Text(user.name),
-            ElevatedButton(
-              onPressed: () => viewModel.loadProfile(user.id),
-              child: const Text('Refresh'),
-            ),
-          ],
-        );
-      },
+    return profileAsync.when(
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (error, stack) => Center(child: Text('Error: $error')),
+      data: (user) => Column(
+        children: [
+          Text(user.name),
+          ElevatedButton(
+            onPressed: () => ref.read(profileViewModelProvider(userId).notifier).refresh(),
+            child: const Text('Refresh'),
+          ),
+        ],
+      ),
     );
+  }
+}
+```
+
+### App Entry Point
+
+```dart
+void main() {
+  runApp(const ProviderScope(child: MyApp()));
+}
+
+class MyApp extends ConsumerWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final router = ref.watch(routerProvider);
+    return MaterialApp.router(routerConfig: router);
   }
 }
 ```

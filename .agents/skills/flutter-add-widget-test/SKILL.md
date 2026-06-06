@@ -2,153 +2,168 @@
 name: flutter-add-widget-test
 description: Implement a component-level test using `WidgetTester` to verify UI rendering and user interactions (tapping, scrolling, entering text). Use when validating that a specific widget displays correct data and responds to events as expected.
 metadata:
-  model: models/gemini-3.1-pro-preview
-  last_modified: Tue, 21 Apr 2026 21:15:41 GMT
+  last_modified: Fri, 06 Jun 2026 00:00:00 GMT
 ---
 # Writing Flutter Widget Tests
 
 ## Contents
 - [Setup & Configuration](#setup--configuration)
 - [Core Components](#core-components)
+- [Riverpod Integration](#riverpod-integration)
 - [Workflow: Implementing a Widget Test](#workflow-implementing-a-widget-test)
 - [Interaction & State Management](#interaction--state-management)
 - [Examples](#examples)
 
 ## Setup & Configuration
 
-Ensure the testing environment is properly configured before authoring widget tests.
-
-1. Add the `flutter_test` dependency to the `dev_dependencies` section of `pubspec.yaml`.
-2. Place all test files in the `test/` directory at the root of the project.
-3. Suffix all test file names with `_test.dart` (e.g., `widget_test.dart`).
+1. `flutter_test` is already in `dev_dependencies` — no changes needed.
+2. Place test files in `test/` mirroring the `lib/` structure (e.g., `test/ui/home/widgets/home_screen_test.dart`).
+3. Suffix all test files with `_test.dart`.
 
 ## Core Components
 
-Utilize the following `flutter_test` components to interact with and validate the widget tree:
+- **`WidgetTester`**: Primary interface for building and interacting with widgets. Provided by `testWidgets()`.
+- **`Finder`**: Locates widgets (`find.text('Submit')`, `find.byType(TextField)`, `find.byKey(Key('k'))`).
+- **`Matcher`**: Verifies state (`findsOneWidget`, `findsNothing`, `findsNWidgets(2)`).
 
-*   **`WidgetTester`**: The primary interface for building and interacting with widgets in the test environment. Provided automatically by the `testWidgets()` function.
-*   **`Finder`**: Locates widgets in the test environment (e.g., `find.text('Submit')`, `find.byType(TextField)`, `find.byKey(Key('submit_btn'))`).
-*   **`Matcher`**: Verifies the presence or state of widgets located by a `Finder` (e.g., `findsOneWidget`, `findsNothing`, `findsNWidgets(2)`, `matchesGoldenFile`).
+## Riverpod Integration
+
+All widgets that use `ref.watch()` or `ConsumerWidget` must be wrapped in `ProviderScope`.
+
+**Override providers** to inject test doubles (use `mocktail` — not `mockito`). Use `overrideWith` as the universal form — `overrideWithValue` only works on sync functional providers and will not compile on class-based notifiers or async providers:
+```dart
+await tester.pumpWidget(
+  ProviderScope(
+    overrides: [
+      userRepositoryProvider.overrideWith((ref) => mockRepository),
+    ],
+    child: const MaterialApp(home: ProfileScreen(userId: '1')),
+  ),
+);
+```
+
+Use `ProviderContainer` for testing providers in isolation (without widgets):
+```dart
+final container = ProviderContainer(
+  overrides: [userRepositoryProvider.overrideWith((ref) => mockRepository)],
+);
+addTearDown(container.dispose);
+final result = await container.read(profileViewModelProvider('1').future);
+```
 
 ## Workflow: Implementing a Widget Test
 
-Copy the following checklist to track progress when implementing a new widget test.
-
 ### Task Progress
-- [ ] **Step 1: Define the test.** Use `testWidgets('description', (WidgetTester tester) async { ... })`.
-- [ ] **Step 2: Build the widget.** Call `await tester.pumpWidget(MyWidget())` to render the UI. Wrap the widget in a `MaterialApp` or `Directionality` widget if it requires inherited directional or theme data.
-- [ ] **Step 3: Locate elements.** Instantiate `Finder` objects for the target widgets.
-- [ ] **Step 4: Verify initial state.** Use `expect(finder, matcher)` to validate the initial render.
-- [ ] **Step 5: Simulate interactions.** Execute gestures or inputs (e.g., `await tester.tap(buttonFinder)`).
-- [ ] **Step 6: Rebuild the tree.** Call `await tester.pump()` or `await tester.pumpAndSettle()` to process state changes.
-- [ ] **Step 7: Verify updated state.** Use `expect()` to validate the UI after the interaction.
-- [ ] **Step 8: Run and validate.** Execute `flutter test test/your_test_file_test.dart`.
-- [ ] **Step 9: Feedback Loop.** Review test output -> identify failing matchers -> adjust widget logic or test assertions -> re-run until passing.
+- [ ] **Step 1: Define the test.** Use `testWidgets('description', (tester) async { ... })`.
+- [ ] **Step 2: Build the widget.** Call `await tester.pumpWidget(...)`. Wrap in `ProviderScope` if the widget uses Riverpod. Wrap in `MaterialApp` if it needs theme/routing context.
+- [ ] **Step 3: Override providers.** If the widget reads providers, override them with mocks or stubs.
+- [ ] **Step 4: Pump.** Call `await tester.pump()` or `await tester.pumpAndSettle()` for async state.
+- [ ] **Step 5: Locate and verify.** Use `find` + `expect` to assert initial state.
+- [ ] **Step 6: Simulate interactions.** Tap, scroll, enter text.
+- [ ] **Step 7: Pump again and verify.** Assert updated state.
+- [ ] **Step 8: Run.** `flutter test test/path/to/widget_test.dart`.
+- [ ] **Step 9: Feedback loop.** Review failures → fix assertions or widget logic → re-run.
 
 ## Interaction & State Management
 
-Apply the following conditional logic based on the type of interaction or state change being tested:
-
-*   **If testing static rendering:** Call `await tester.pumpWidget()` once, then immediately run `expect()` assertions.
-*   **If testing standard state changes (e.g., button taps):** 
-    1. Call `await tester.tap(finder)`.
-    2. Call `await tester.pump()` to trigger a single frame rebuild.
-*   **If testing animations, transitions, or asynchronous UI updates:** 
-    1. Trigger the action (e.g., `await tester.drag(finder, Offset(500, 0))`).
-    2. Call `await tester.pumpAndSettle()` to repeatedly pump frames until no more frames are scheduled (animation completes).
-*   **If testing text input:** Call `await tester.enterText(textFieldFinder, 'Input string')`.
-*   **If testing items in a dynamic or long list:** Call `await tester.scrollUntilVisible(itemFinder, 500.0, scrollable: listFinder)` to ensure the target widget is rendered before interacting with it.
+- **Static rendering:** `pumpWidget()` once, then `expect()`.
+- **State changes (taps, text input):** `tap()` or `enterText()`, then `pump()`.
+- **Animations/async:** `tester.pumpAndSettle()`.
+- **Async provider state:** Use `pump()` after interactions to advance futures. `pumpAndSettle()` for animations.
+- **Long lists:** `scrollUntilVisible(itemFinder, 500.0, scrollable: listFinder)`.
 
 ## Examples
 
-### High-Fidelity Widget Test Implementation
+### Testing a ConsumerWidget with Provider Override
 
-**Target Widget (`lib/todo_list.dart`):**
 ```dart
+// test/ui/gallery/widgets/gallery_screen_test.dart
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
+import 'package:push_it_to_the_limit/data/repositories/photo/photo_repository.dart';
+import 'package:push_it_to_the_limit/ui/gallery/widgets/gallery_screen.dart';
 
-class TodoList extends StatefulWidget {
-  const TodoList({super.key});
+class MockPhotoRepository extends Mock implements PhotoRepository {}
 
-  @override
-  State<TodoList> createState() => _TodoListState();
-}
+void main() {
+  late MockPhotoRepository mockRepo;
 
-class _TodoListState extends State<TodoList> {
-  final todos = <String>[];
-  final controller = TextEditingController();
+  setUp(() {
+    mockRepo = MockPhotoRepository();
+  });
 
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      home: Scaffold(
-        body: Column(
-          children: [
-            TextField(controller: controller),
-            Expanded(
-              child: ListView.builder(
-                itemCount: todos.length,
-                itemBuilder: (context, index) {
-                  final todo = todos[index];
-                  return Dismissible(
-                    key: Key('$todo$index'),
-                    onDismissed: (_) => setState(() => todos.removeAt(index)),
-                    child: ListTile(title: Text(todo)),
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-        floatingActionButton: FloatingActionButton(
-          onPressed: () {
-            setState(() {
-              todos.add(controller.text);
-              controller.clear();
-            });
-          },
-          child: const Icon(Icons.add),
-        ),
+  testWidgets('shows photos when loaded', (tester) async {
+    when(() => mockRepo.getPhotos()).thenAnswer(
+      (_) async => [Photo(id: '1', title: 'Sunset')],
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          photoRepositoryProvider.overrideWith((ref) => mockRepo),
+        ],
+        child: const MaterialApp(home: GalleryScreen()),
       ),
     );
-  }
+
+    // Pump to resolve the async provider
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('Sunset'), findsOneWidget);
+  });
+
+  testWidgets('shows error when fetch fails', (tester) async {
+    when(() => mockRepo.getPhotos()).thenThrow(Exception('Network error'));
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          photoRepositoryProvider.overrideWith((ref) => mockRepo),
+        ],
+        child: const MaterialApp(home: GalleryScreen()),
+      ),
+    );
+
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Error'), findsOneWidget);
+  });
 }
 ```
 
-**Test Implementation (`test/todo_list_test.dart`):**
+### Testing Pure UI (No Providers)
+
 ```dart
-import 'package:flutter/material.dart';
-import 'package:flutter_test/flutter_test.dart';
-import 'package:my_app/todo_list.dart';
+testWidgets('shows loading indicator', (tester) async {
+  await tester.pumpWidget(
+    const MaterialApp(
+      home: Scaffold(body: CircularProgressIndicator()),
+    ),
+  );
 
-void main() {
-  testWidgets('Add and remove a todo item', (WidgetTester tester) async {
-    // 1. Build the widget
-    await tester.pumpWidget(const TodoList());
+  expect(find.byType(CircularProgressIndicator), findsOneWidget);
+});
+```
 
-    // 2. Verify initial state
-    expect(find.byType(ListTile), findsNothing);
+### Testing Provider Logic with ProviderContainer
 
-    // 3. Enter text into the TextField
-    await tester.enterText(find.byType(TextField), 'Buy groceries');
+```dart
+test('GalleryViewModel loads photos', () async {
+  final mockRepo = MockPhotoRepository();
+  when(() => mockRepo.getPhotos()).thenAnswer(
+    (_) async => [Photo(id: '1', title: 'Sunset')],
+  );
 
-    // 4. Tap the add button
-    await tester.tap(find.byType(FloatingActionButton));
+  final container = ProviderContainer(
+    overrides: [photoRepositoryProvider.overrideWith((ref) => mockRepo)],
+  );
+  addTearDown(container.dispose);
 
-    // 5. Rebuild the widget to reflect the new state
-    await tester.pump();
-
-    // 6. Verify the item was added
-    expect(find.text('Buy groceries'), findsOneWidget);
-
-    // 7. Swipe the item to dismiss it
-    await tester.drag(find.byType(Dismissible), const Offset(500, 0));
-
-    // 8. Build the widget until the dismiss animation ends
-    await tester.pumpAndSettle();
-
-    // 9. Verify the item was removed
-    expect(find.text('Buy groceries'), findsNothing);
-  });
-}
+  final photos = await container.read(galleryViewModelProvider.future);
+  expect(photos, hasLength(1));
+  expect(photos.first.title, 'Sunset');
+});
 ```

@@ -1,153 +1,145 @@
 ---
 name: flutter-implement-json-serialization
-description: Create model classes with `fromJson` and `toJson` methods using `dart:convert`. Use when manually mapping JSON keys to class properties for simple data structures.
+description: Create immutable model classes with JSON serialization using `freezed` and `json_serializable`. Use when defining domain models or API models that require fromJson/toJson support.
 metadata:
-  model: models/gemini-3.1-pro-preview
-  last_modified: Tue, 21 Apr 2026 21:44:50 GMT
+  last_modified: Fri, 06 Jun 2026 00:00:00 GMT
 ---
-# Serializing JSON Manually in Flutter
+# JSON Serialization with Freezed
+
+This project uses `freezed` + `json_serializable` for all model classes. Do not write manual `fromJson`/`toJson` — use code generation.
 
 ## Contents
-- [Core Guidelines](#core-guidelines)
+- [Required Packages](#required-packages)
 - [Workflow: Implementing a Serializable Model](#workflow-implementing-a-serializable-model)
-- [Workflow: Fetching and Parsing JSON](#workflow-fetching-and-parsing-json)
+- [Workflow: Nested Models](#workflow-nested-models)
 - [Examples](#examples)
 
-## Core Guidelines
+## Required Packages
 
-- **Import `dart:convert`**: Utilize Flutter's built-in `dart:convert` library for manual JSON encoding (`jsonEncode`) and decoding (`jsonDecode`).
-- **Enforce Type Safety**: Always cast the `dynamic` result of `jsonDecode()` to the expected type, typically `Map<String, dynamic>` for objects or `List<dynamic>` for arrays.
-- **Encapsulate Serialization Logic**: Define plain model classes containing properties corresponding to the JSON structure. Implement a `fromJson` factory constructor and a `toJson` method within the model.
-- **Handle Background Parsing**: If parsing large JSON documents (execution time > 16ms), offload the parsing logic to a separate isolate using Flutter's `compute()` function to prevent UI jank.
-- **Throw Exceptions on Failure**: When handling HTTP responses, throw an exception if the status code is not successful (e.g., not 200 OK or 201 Created). Do not return `null`.
+Already in `pubspec.yaml`:
+```yaml
+dependencies:
+  freezed_annotation: ^3.0.0
+  json_annotation: ^4.9.0
+
+dev_dependencies:
+  build_runner: ^2.4.14
+  freezed: ^3.2.5
+  json_serializable: ^6.9.0
+```
 
 ## Workflow: Implementing a Serializable Model
 
-Use this checklist to implement manual JSON serialization for a data model.
+### Task Progress
+- [ ] **Step 1: Create the model file.** Add `part '<filename>.freezed.dart';` and `part '<filename>.g.dart';` directives.
+- [ ] **Step 2: Annotate with `@freezed`.** Add `class Foo with _$Foo { ... }`.
+- [ ] **Step 3: Define the factory constructor.** Use `const factory` with named required parameters.
+- [ ] **Step 4: Add `fromJson`.** Add `factory Foo.fromJson(Map<String, dynamic> json) => _$FooFromJson(json);`.
+- [ ] **Step 5: Run code generation.** Execute `dart run build_runner build --delete-conflicting-outputs`.
+- [ ] **Step 6: Validate.** Call `Foo.fromJson(map)` and `foo.toJson()` in a unit test.
 
-**Task Progress:**
-- [ ] Define the plain model class with `final` properties.
-- [ ] Implement the `factory Model.fromJson(Map<String, dynamic> json)` constructor.
-- [ ] Implement the `Map<String, dynamic> toJson()` method.
-- [ ] Write unit tests for both serialization methods.
-- [ ] Run validator -> review type mismatch errors -> fix casting logic.
+### When to use which pattern
+- **Domain models** (used across features): `@freezed` in `domain/models/<domain>/`.
+- **API models** (only in the data layer): also `@freezed`, kept in `data/repositories/<domain>/` or `data/services/`.
 
-1. **Define the Model**: Create a class with properties matching the JSON keys.
-2. **Implement `fromJson`**: Extract values from the `Map` and cast them to the appropriate Dart types. Use pattern matching or explicit casting.
-3. **Implement `toJson`**: Return a `Map<String, dynamic>` mapping the class properties back to their JSON string keys.
-4. **Validate**: Execute unit tests to ensure type safety, autocompletion, and compile-time exception handling function correctly.
+## Workflow: Nested Models
 
-## Workflow: Fetching and Parsing JSON
+If a model contains other model types, annotate with `@JsonSerializable(explicitToJson: true)` — or simply use `@freezed` on both classes (freezed generates `explicitToJson` behavior automatically when using code-gen).
 
-Use this conditional workflow when retrieving and parsing JSON from a network request.
-
-**Task Progress:**
-- [ ] Execute the HTTP request.
-- [ ] Validate the response status code.
-- [ ] Determine parsing strategy (Synchronous vs. Isolate).
-- [ ] Decode and map the JSON to the model.
-
-1. **Execute Request**: Use the `http` package to perform the network call.
-2. **Validate Response**: 
-   - If `response.statusCode == 200` (or 201 for POST), proceed to parsing.
-   - If the status code indicates failure, throw an `Exception`.
-3. **Determine Parsing Strategy**:
-   - If parsing a **small payload** (e.g., a single object), parse synchronously on the main thread.
-   - If parsing a **large payload** (e.g., an array of thousands of objects), use `compute(parseFunction, response.body)` to parse in a background isolate.
-4. **Decode and Map**: Pass the decoded JSON to your model's `fromJson` constructor.
+For **list of nested models**, call `fromJson` on each element:
+```dart
+factory Order.fromJson(Map<String, dynamic> json) => _$OrderFromJson(json);
+```
+`json_serializable` handles nested `@freezed` types automatically.
 
 ## Examples
 
-### High-Fidelity Model Implementation
+### Simple Model
 
 ```dart
-import 'dart:convert';
+// lib/domain/models/user/user.dart
+import 'package:freezed_annotation/freezed_annotation.dart';
 
-class User {
-  final int id;
-  final String name;
-  final String email;
+part 'user.freezed.dart';
+part 'user.g.dart';
 
-  const User({
-    required this.id,
-    required this.name,
-    required this.email,
-  });
+@freezed
+class User with _$User {
+  const factory User({
+    required String id,
+    required String name,
+    required String email,
+  }) = _User;
 
-  // Factory constructor for deserialization
-  factory User.fromJson(Map<String, dynamic> json) {
-    return switch (json) {
-      {
-        'id': int id,
-        'name': String name,
-        'email': String email,
-      } => 
-        User(
-          id: id,
-          name: name,
-          email: email,
-        ),
-      _ => throw const FormatException('Failed to load User.'),
-    };
-  }
-
-  // Method for serialization
-  Map<String, dynamic> toJson() {
-    return {
-      'id': id,
-      'name': name,
-      'email': email,
-    };
-  }
+  factory User.fromJson(Map<String, dynamic> json) => _$UserFromJson(json);
 }
 ```
 
-### Synchronous Parsing (Small Payload)
+Usage:
+```dart
+final user = User.fromJson({'id': '1', 'name': 'Jerry', 'email': 'j@example.com'});
+final map = user.toJson();
+final copy = user.copyWith(name: 'Updated');
+```
+
+### Model with Nested Types
 
 ```dart
-import 'dart:convert';
-import 'package:http/http.dart' as http;
+// lib/domain/models/booking/booking.dart
+import 'package:freezed_annotation/freezed_annotation.dart';
+import 'package:push_it_to_the_limit/domain/models/user/user.dart';
 
-Future<User> fetchUser(http.Client client, int userId) async {
-  final response = await client.get(
-    Uri.parse('https://api.example.com/users/$userId'),
-    headers: {'Accept': 'application/json'},
-  );
+part 'booking.freezed.dart';
+part 'booking.g.dart';
 
-  if (response.statusCode == 200) {
-    // Decode returns dynamic, cast to Map<String, dynamic>
-    final Map<String, dynamic> jsonMap = jsonDecode(response.body) as Map<String, dynamic>;
-    return User.fromJson(jsonMap);
-  } else {
-    throw Exception('Failed to load user');
-  }
+@freezed
+class Booking with _$Booking {
+  const factory Booking({
+    required String id,
+    required String destination,
+    required User user,
+    required DateTime date,
+  }) = _Booking;
+
+  factory Booking.fromJson(Map<String, dynamic> json) => _$BookingFromJson(json);
 }
 ```
 
-### Background Parsing (Large Payload)
+### Sealed Union (multiple cases)
 
 ```dart
-import 'dart:convert';
-import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
-
-// Top-level function required for compute()
-List<User> parseUsers(String responseBody) {
-  final parsed = (jsonDecode(responseBody) as List<dynamic>).cast<Map<String, dynamic>>();
-  return parsed.map<User>((json) => User.fromJson(json)).toList();
+@freezed
+sealed class AuthState with _$AuthState {
+  const factory AuthState.unauthenticated() = Unauthenticated;
+  const factory AuthState.authenticated({required User user}) = Authenticated;
+  const factory AuthState.loading() = AuthLoading;
 }
+```
 
-Future<List<User>> fetchUsers(http.Client client) async {
-  final response = await client.get(
-    Uri.parse('https://api.example.com/users'),
-    headers: {'Accept': 'application/json'},
-  );
+No `fromJson` needed on sealed unions unless they map to an API discriminated union.
 
-  if (response.statusCode == 200) {
-    // Offload expensive parsing to a background isolate
-    return compute(parseUsers, response.body);
-  } else {
-    throw Exception('Failed to load users');
-  }
+### Custom JSON key names
+
+```dart
+@freezed
+class ApiUser with _$ApiUser {
+  const factory ApiUser({
+    required String id,
+    @JsonKey(name: 'full_name') required String fullName,
+    @JsonKey(name: 'avatar_url') String? avatarUrl,
+  }) = _ApiUser;
+
+  factory ApiUser.fromJson(Map<String, dynamic> json) => _$ApiUserFromJson(json);
 }
+```
+
+### After every model change
+
+```bash
+dart run build_runner build --delete-conflicting-outputs
+```
+
+Use `watch` mode during active development:
+```bash
+dart run build_runner watch --delete-conflicting-outputs
 ```

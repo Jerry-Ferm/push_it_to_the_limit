@@ -1,224 +1,165 @@
 ---
 name: flutter-setup-declarative-routing
-description: Configure `MaterialApp.router` using a package like `go_router` for advanced URL-based navigation. Use when developing web applications or mobile apps that require specific deep linking and browser history support.
+description: Configure `MaterialApp.router` using `go_router` as a Riverpod provider for URL-based navigation and auth guards. Use when adding new routes or implementing auth-gated navigation.
 metadata:
-  model: models/gemini-3.1-pro-preview
-  last_modified: Tue, 21 Apr 2026 21:08:03 GMT
+  last_modified: Fri, 06 Jun 2026 00:00:00 GMT
 ---
-# Implementing Routing and Deep Linking
+# Implementing Routing with go_router and Riverpod
 
 ## Contents
 - [Core Concepts](#core-concepts)
-- [Workflow: Initializing the Application and Router](#workflow-initializing-the-application-and-router)
-- [Workflow: Configuring Platform Deep Linking](#workflow-configuring-platform-deep-linking)
-- [Workflow: Implementing Nested Navigation](#workflow-implementing-nested-navigation)
+- [Workflow: Adding Routes](#workflow-adding-routes)
+- [Workflow: Auth Guards](#workflow-auth-guards)
+- [Workflow: Nested Navigation (Shell Routes)](#workflow-nested-navigation-shell-routes)
 - [Examples](#examples)
 
 ## Core Concepts
 
-Use the `go_router` package for declarative routing in Flutter. It provides a robust API for complex routing scenarios, deep linking, and nested navigation. 
+- **`go_router`** handles all declarative routing. Already in `pubspec.yaml`.
+- **The router is a Riverpod provider** (`@Riverpod(keepAlive: true)`) so it can `ref.watch()` auth state and trigger redirects reactively.
+- All routes are declared in `lib/routing/router.dart`. Auth guards go in the `redirect` callback.
+- `ConsumerWidget` in `main.dart` calls `ref.watch(routerProvider)` and passes the result to `MaterialApp.router`.
 
-- **GoRouter**: The central configuration object defining the application's route tree.
-- **GoRoute**: A standard route mapping a URL path to a Flutter screen.
-- **ShellRoute / StatefulShellRoute**: Wraps child routes in a persistent UI shell (e.g., a `BottomNavigationBar`). `StatefulShellRoute` maintains the state of parallel navigation branches.
-- **Path URL Strategy**: Removes the default `#` fragment from web URLs, essential for clean deep linking across platforms.
+**Key go_router types:**
+- `GoRoute`: Maps a URL path to a screen widget.
+- `ShellRoute` / `StatefulShellRoute`: Wraps child routes in a persistent shell (e.g., `BottomNavigationBar`). `StatefulShellRoute` preserves branch state.
+- `redirect`: A callback on `GoRouter` or individual `GoRoute` — return a path string to redirect, `null` to allow.
 
-## Workflow: Initializing the Application and Router
-
-Follow this workflow to bootstrap a new Flutter application with `go_router` and configure the root routing mechanism.
+## Workflow: Adding Routes
 
 ### Task Progress
-- [ ] Create the Flutter application.
-- [ ] Add the `go_router` dependency.
-- [ ] Configure the URL strategy for web/deep linking.
-- [ ] Implement the `GoRouter` configuration.
-- [ ] Bind the router to `MaterialApp.router`.
+- [ ] Add the `GoRoute` entry to the routes list in `lib/routing/router.dart`.
+- [ ] Create the screen widget in `lib/ui/<feature>/widgets/`.
+- [ ] Run `dart run build_runner build --delete-conflicting-outputs` (because the router is generated via `@riverpod`).
+- [ ] Test navigation using `context.go('/path')` or `context.push('/path')`.
 
-### 1. Scaffold the Application
-Run the following commands to create the app and add the required routing package:
-```bash
-flutter create <app-name>
-cd <app-name>
-flutter pub add go_router
-```
+## Workflow: Auth Guards
 
-### 2. Configure the Router
-Define a top-level `GoRouter` instance. Handle authentication or state-based routing using the `redirect` parameter.
+Keep one `GoRouter` instance alive and drive re-evaluation via `refreshListenable`. Watch the notifier (not the state value) so the router body does not re-run and reconstruct `GoRouter` on every auth change — which would wipe the navigation stack.
 
 ```dart
-import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
-import 'package:flutter_web_plugins/url_strategy.dart';
+@Riverpod(keepAlive: true)
+GoRouter router(Ref ref) {
+  final notifier = ref.watch(authStateProvider.notifier);
 
-void main() {
-  // Use path URL strategy to remove the '#' from web URLs
-  usePathUrlStrategy();
-  runApp(const MyApp());
-}
+  return GoRouter(
+    initialLocation: '/',
+    refreshListenable: notifier, // notifier must extend ChangeNotifier
+    redirect: (context, state) {
+      final isLoggedIn = notifier.isAuthenticated;
+      final isOnLoginPage = state.matchedLocation == '/login';
 
-final GoRouter _router = GoRouter(
-  initialLocation: '/',
-  routes: [
-    GoRoute(
-      path: '/',
-      builder: (context, state) => const HomeScreen(),
-      routes: [
-        GoRoute(
-          path: 'details/:id',
-          builder: (context, state) => DetailsScreen(id: state.pathParameters['id']!),
-        ),
-      ],
-    ),
-  ],
-  errorBuilder: (context, state) => ErrorScreen(error: state.error),
-);
-
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp.router(
-      routerConfig: _router,
-      title: 'Routing App',
-    );
-  }
+      if (!isLoggedIn && !isOnLoginPage) return '/login';
+      if (isLoggedIn && isOnLoginPage) return '/';
+      return null;
+    },
+    routes: [...],
+  );
 }
 ```
 
-## Workflow: Configuring Platform Deep Linking
-
-Configure the native platforms to intercept specific URLs and route them into the Flutter application.
+## Workflow: Nested Navigation (Shell Routes)
 
 ### Task Progress
-- [ ] Determine target platforms (iOS, Android, or both).
-- [ ] Apply conditional configuration for Android (Manifest + Asset Links).
-- [ ] Apply conditional configuration for iOS (Plist + Entitlements + AASA).
-- [ ] Run validator -> review errors -> fix.
-
-### If configuring for Android:
-1. **Modify `AndroidManifest.xml`**: Add the intent filter inside the `<activity>` tag for `.MainActivity`.
-```xml
-<intent-filter android:autoVerify="true">
-    <action android:name="android.intent.action.VIEW" />
-    <category android:name="android.intent.category.DEFAULT" />
-    <category android:name="android.intent.category.BROWSABLE" />
-    <data android:scheme="http" android:host="yourdomain.com" />
-    <data android:scheme="https" />
-</intent-filter>
-```
-2. **Host `assetlinks.json`**: Serve the following JSON at `https://yourdomain.com/.well-known/assetlinks.json`.
-```json
-[{
-  "relation": ["delegate_permission/common.handle_all_urls"],
-  "target": {
-    "namespace": "android_app",
-    "package_name": "com.yourcompany.yourapp",
-    "sha256_cert_fingerprints": ["YOUR_SHA256_FINGERPRINT"]
-  }
-}]
-```
-
-### If configuring for iOS:
-1. **Modify `Info.plist`**: Opt-in to Flutter's default deep link handler. 
-*Note: If using a third-party deep linking plugin (e.g., `app_links`), set this to `NO` to prevent conflicts.*
-```xml
-<key>FlutterDeepLinkingEnabled</key>
-<true/>
-```
-2. **Modify `Runner.entitlements`**: Add the associated domain.
-```xml
-<key>com.apple.developer.associated-domains</key>
-<array>
-  <string>applinks:yourdomain.com</string>
-</array>
-```
-3. **Host `apple-app-site-association`**: Serve the following JSON (without a `.json` extension) at `https://yourdomain.com/.well-known/apple-app-site-association`.
-```json
-{
-  "applinks": {
-    "apps": [],
-    "details": [{
-      "appIDs": ["TEAM_ID.com.yourcompany.yourapp"],
-      "paths": ["*"],
-      "components": [{"/": "/*"}]
-    }]
-  }
-}
-```
-
-### Validation Loop
-Run validator -> review errors -> fix.
-- **Android**: Test using ADB.
-  ```bash
-  adb shell 'am start -a android.intent.action.VIEW -c android.intent.category.BROWSABLE -d "https://yourdomain.com/details/123"' com.yourcompany.yourapp
-  ```
-- **iOS**: Test using `xcrun` on a booted simulator.
-  ```bash
-  xcrun simctl openurl booted https://yourdomain.com/details/123
-  ```
-
-## Workflow: Implementing Nested Navigation
-
-Use `StatefulShellRoute` to implement persistent UI shells (like a bottom navigation bar) that maintain the state of their child routes.
-
-### Task Progress
-- [ ] Define `StatefulShellRoute.indexedStack` in the `GoRouter` configuration.
-- [ ] Create `StatefulShellBranch` instances for each navigation tab.
+- [ ] Define `StatefulShellRoute.indexedStack` in the `GoRouter` routes list.
+- [ ] Create `StatefulShellBranch` for each tab.
 - [ ] Implement the shell widget using `StatefulNavigationShell`.
-
-```dart
-final GoRouter _router = GoRouter(
-  initialLocation: '/home',
-  routes: [
-    StatefulShellRoute.indexedStack(
-      builder: (context, state, navigationShell) {
-        return ScaffoldWithNavBar(navigationShell: navigationShell);
-      },
-      branches: [
-        StatefulShellBranch(
-          routes: [
-            GoRoute(
-              path: '/home',
-              builder: (context, state) => const HomeScreen(),
-            ),
-          ],
-        ),
-        StatefulShellBranch(
-          routes: [
-            GoRoute(
-              path: '/settings',
-              builder: (context, state) => const SettingsScreen(),
-            ),
-          ],
-        ),
-      ],
-    ),
-  ],
-);
-```
+- [ ] Run code generation.
 
 ## Examples
 
-### High-Fidelity Shell Widget Implementation
-Implement the UI shell that consumes the `StatefulNavigationShell` to handle branch switching.
+### Router Provider (`lib/routing/router.dart`)
 
 ```dart
-class ScaffoldWithNavBar extends StatelessWidget {
-  const ScaffoldWithNavBar({
-    required this.navigationShell,
-    super.key,
-  });
+import 'package:go_router/go_router.dart';
+import 'package:riverpod_annotation/riverpod_annotation.dart';
 
-  final StatefulNavigationShell navigationShell;
+part 'router.g.dart';
 
-  void _goBranch(int index) {
-    navigationShell.goBranch(
-      index,
-      // Support navigating to the initial location when tapping the active tab.
-      initialLocation: index == navigationShell.currentIndex,
+@Riverpod(keepAlive: true)
+GoRouter router(Ref ref) {
+  return GoRouter(
+    initialLocation: '/',
+    routes: [
+      GoRoute(
+        path: '/',
+        builder: (context, state) => const HomeScreen(),
+        routes: [
+          GoRoute(
+            path: 'details/:id',
+            builder: (context, state) =>
+                DetailsScreen(id: state.pathParameters['id']!),
+          ),
+        ],
+      ),
+      GoRoute(
+        path: '/login',
+        builder: (context, state) => const LoginScreen(),
+      ),
+    ],
+    errorBuilder: (context, state) => ErrorScreen(error: state.error),
+  );
+}
+```
+
+### App Entry Point (`lib/main.dart`)
+
+```dart
+import 'package:flutter_web_plugins/url_strategy.dart';
+
+void main() {
+  usePathUrlStrategy(); // prevents hash (#) URLs on web
+  runApp(const ProviderScope(child: MyApp()));
+}
+
+class MyApp extends ConsumerWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final router = ref.watch(routerProvider);
+    return MaterialApp.router(
+      routerConfig: router,
+      title: 'Push It To The Limit',
+      theme: ThemeData(
+        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
+      ),
     );
   }
+}
+```
+
+### Shell Route with Bottom Nav
+
+```dart
+StatefulShellRoute.indexedStack(
+  builder: (context, state, navigationShell) =>
+      AppShell(navigationShell: navigationShell),
+  branches: [
+    StatefulShellBranch(
+      routes: [
+        GoRoute(
+          path: '/home',
+          builder: (context, state) => const HomeScreen(),
+        ),
+      ],
+    ),
+    StatefulShellBranch(
+      routes: [
+        GoRoute(
+          path: '/settings',
+          builder: (context, state) => const SettingsScreen(),
+        ),
+      ],
+    ),
+  ],
+),
+```
+
+```dart
+class AppShell extends StatelessWidget {
+  const AppShell({super.key, required this.navigationShell});
+  final StatefulNavigationShell navigationShell;
 
   @override
   Widget build(BuildContext context) {
@@ -226,7 +167,10 @@ class ScaffoldWithNavBar extends StatelessWidget {
       body: navigationShell,
       bottomNavigationBar: NavigationBar(
         selectedIndex: navigationShell.currentIndex,
-        onDestinationSelected: _goBranch,
+        onDestinationSelected: (index) => navigationShell.goBranch(
+          index,
+          initialLocation: index == navigationShell.currentIndex,
+        ),
         destinations: const [
           NavigationDestination(icon: Icon(Icons.home), label: 'Home'),
           NavigationDestination(icon: Icon(Icons.settings), label: 'Settings'),
@@ -238,18 +182,17 @@ class ScaffoldWithNavBar extends StatelessWidget {
 ```
 
 ### Programmatic Navigation
-Use the `context.go()` and `context.push()` extension methods provided by `go_router`.
 
 ```dart
-// Replaces the current route stack with the target route (Declarative)
+// Replace current route stack
 context.go('/details/123');
 
-// Pushes the target route onto the existing stack (Imperative)
+// Push onto stack
 context.push('/details/123');
 
-// Navigates using a named route and path parameters
+// Named route with parameters
 context.goNamed('details', pathParameters: {'id': '123'});
 
-// Pops the current route
+// Go back
 context.pop();
 ```
